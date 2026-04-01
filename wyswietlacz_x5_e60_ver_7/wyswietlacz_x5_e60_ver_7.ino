@@ -27,7 +27,14 @@ static const uint16_t C_GREEN  = 0x07E0;
 static const uint16_t C_ORANGE = 0xFD20;  // pomarańczowy w formacie 565
 
 // ================== Przycisk ==================
-#define PIN_PRZYCISKU 21
+#define PIN_PRZYCISKU 14
+
+// ================== K-Line ==================
+#define KLINE_RX_PIN      35
+#define KLINE_TX_PIN      38
+#define KLINE_TARGET_ADDR 0x12
+#define KLINE_TESTER_ADDR 0xF1
+#define PIN_KLINE_MODE    21
 
 // ================== Marketing/logo 0x001 ==================
 static const uint32_t MARKETING_INTERVAL = 200;
@@ -64,6 +71,17 @@ int  tSkrzyni = -99;
 int  tSilnika = -99;
 
 int stanPrzycisku = HIGH;
+
+// ================== K-Line dane ==================
+static bool  kLineMode          = false;
+static bool  kLineConnected     = false;
+static int   kLineBoostHpa      = -99;
+static float kLineVoltage       = -99.0f;
+static int   kLineReadCount     = 0;
+static uint32_t lastKLineReadMs = 0;
+static const uint32_t KLINE_READ_INTERVAL_MS = 200;
+static int   prevKLineBoostHpa  = -99;
+static float prevKLineVoltage   = -99.0f;
 
 // ================== Stan poprzedni ==================
 char poprzbieg = -99;
@@ -298,6 +316,13 @@ static void drawSuffix(int16_t x, int16_t y, uint16_t color) {
   display.print("C");
 }
 
+static void drawSuffixStr(int16_t x, int16_t y, uint16_t color, const char* suf) {
+  display.setTextSize(2);
+  display.setTextColor(color);
+  display.setCursor(x, y);
+  display.print(suf);
+}
+
 static void clearCharAt(int16_t baseX, int16_t baseY, uint8_t idx) {
   display.fillRect(baseX + idx * CHAR_W, baseY, CHAR_W, CHAR_H, C_BLACK);
 }
@@ -342,6 +367,46 @@ static void drawTempSmart(int16_t baseX, int16_t baseY, uint16_t color,
     }
   }
   strcpy(prevBuf, newBuf);
+  prevLen = newLen;
+}
+
+// Wersja drawTempSmart dla K-Line: przyjmuje gotowy string wartości i sufiks
+static void drawKLineSmart(int16_t baseX, int16_t baseY, uint16_t color,
+                           const char* valStr, const char* sufStr,
+                           char* prevBuf, uint8_t& prevLen, bool& suffixDrawn)
+{
+  uint8_t newLen = (uint8_t)strlen(valStr);
+  uint8_t oldLen = prevLen;
+  bool lenChanged = (newLen != oldLen);
+
+  if (lenChanged || !suffixDrawn) {
+    if (suffixDrawn && oldLen > 0) {
+      int16_t oldSuffX = baseX + oldLen * CHAR_W + 2;
+      display.fillRect(oldSuffX - 1, baseY - 1, 50, CHAR_H + 2, C_BLACK);
+    }
+    uint8_t maxLen = (oldLen > newLen) ? oldLen : newLen;
+    if (maxLen > 0) display.fillRect(baseX, baseY, maxLen * CHAR_W, CHAR_H, C_BLACK);
+
+    display.setTextSize(2);
+    display.setTextColor(color);
+    display.setCursor(baseX, baseY);
+    display.print(valStr);
+
+    int16_t newSuffX = baseX + newLen * CHAR_W + 2;
+    drawSuffixStr(newSuffX, baseY, color, sufStr);
+    suffixDrawn = true;
+  } else {
+    display.setTextSize(2);
+    display.setTextColor(color);
+    for (uint8_t i = 0; i < newLen; i++) {
+      if (valStr[i] != prevBuf[i]) {
+        clearCharAt(baseX, baseY, i);
+        display.setCursor(baseX + i * CHAR_W, baseY);
+        display.print(valStr[i]);
+      }
+    }
+  }
+  strcpy(prevBuf, valStr);
   prevLen = newLen;
 }
 
@@ -509,11 +574,11 @@ static void drawStaticUI() {
   display.setTextSize(2);
   display.setTextColor(C_CYAN);
   display.setCursor(X_ENG_LABEL, Y_ENG_ROW);
-  display.print("ENG:");
+  display.print(kLineMode ? "BST:" : "ENG:");
 
   display.setTextColor(C_CYAN);
   display.setCursor(X_GBX_LABEL, Y_GBX_ROW);
-  display.print("GEAR:");
+  display.print(kLineMode ? "VOLT:" : "GEAR:");
 
   engPrevBuf[0] = '\0'; engPrevLen = 0; engSuffixDrawn = false;
   gbxPrevBuf[0] = '\0'; gbxPrevLen = 0; gbxSuffixDrawn = false;
@@ -521,13 +586,29 @@ static void drawStaticUI() {
 }
 
 static void drawEngTemp() {
-  drawTempSmart(X_ENG_NUM, Y_ENG_ROW, C_YELL,
-                tSilnika, engPrevBuf, engPrevLen, engSuffixDrawn);
+  if (kLineMode) {
+    char buf[12];
+    if (kLineBoostHpa == -99) strcpy(buf, "--");
+    else snprintf(buf, sizeof(buf), "%d", kLineBoostHpa);
+    drawKLineSmart(X_ENG_NUM, Y_ENG_ROW, C_YELL, buf, "hPa",
+                   engPrevBuf, engPrevLen, engSuffixDrawn);
+  } else {
+    drawTempSmart(X_ENG_NUM, Y_ENG_ROW, C_YELL,
+                  tSilnika, engPrevBuf, engPrevLen, engSuffixDrawn);
+  }
 }
 
 static void drawGbxTemp() {
-  drawTempSmart(X_GBX_NUM, Y_GBX_ROW, C_WHITE,
-                tSkrzyni, gbxPrevBuf, gbxPrevLen, gbxSuffixDrawn);
+  if (kLineMode) {
+    char buf[12];
+    if (kLineVoltage == -99.0f) strcpy(buf, "--");
+    else snprintf(buf, sizeof(buf), "%.1f", kLineVoltage);
+    drawKLineSmart(X_GBX_NUM, Y_GBX_ROW, C_WHITE, buf, "V",
+                   gbxPrevBuf, gbxPrevLen, gbxSuffixDrawn);
+  } else {
+    drawTempSmart(X_GBX_NUM, Y_GBX_ROW, C_WHITE,
+                  tSkrzyni, gbxPrevBuf, gbxPrevLen, gbxSuffixDrawn);
+  }
 }
 
 static void updateUI(bool forceAll) {
@@ -549,8 +630,8 @@ static void updateUI(bool forceAll) {
                     || (poprzTrybUI != trybUI)
                     || (drawnGearChar != (isGearDigit(biegUI) ? biegUI : '-'))
                     || (drawnArrow != zmiaUI);
-  bool engChanged = forceAll || (poptSilnika != tSilnika);
-  bool gbxChanged = forceAll || (poptSkrzyni != tSkrzyni);
+  bool engChanged = forceAll || (kLineMode ? (prevKLineBoostHpa != kLineBoostHpa) : (poptSilnika != tSilnika));
+  bool gbxChanged = forceAll || (kLineMode ? (prevKLineVoltage != kLineVoltage) : (poptSkrzyni != tSkrzyni));
 
   if (midChanged) updateMidArea();
   if (engChanged) drawEngTemp();
@@ -564,6 +645,114 @@ static void commitPops() {
   poprzTrybUI = trybUI;
   poptSkrzyni = tSkrzyni;
   poptSilnika = tSilnika;
+  prevKLineBoostHpa = kLineBoostHpa;
+  prevKLineVoltage  = kLineVoltage;
+}
+
+// ================== K-Line funkcje ==================
+
+static byte kLineChecksum(byte* data, int len) {
+  int sum = 0;
+  for (int i = 0; i < len; i++) sum += data[i];
+  return (byte)(sum & 0xFF);
+}
+
+static bool kLineFastInit() {
+  Serial1.end();
+  Serial1.begin(10400, SERIAL_8N1, KLINE_RX_PIN, KLINE_TX_PIN);
+  Serial1.updateBaudRate(360);
+  Serial1.write(0x00);
+  Serial1.flush();
+  delay(22);
+  Serial1.updateBaudRate(10400);
+  while (Serial1.available()) Serial1.read();
+  byte startComm[] = {0x81, KLINE_TARGET_ADDR, KLINE_TESTER_ADDR, 0x81, 0x05};
+  Serial1.write(startComm, 5);
+  Serial1.flush();
+  unsigned long t = millis();
+  int cnt = 0;
+  byte rxBuf[64];
+  while (millis() - t < 200) {
+    if (Serial1.available()) { rxBuf[cnt++] = Serial1.read(); t = millis(); }
+  }
+  for (int i = 0; i < cnt; i++) {
+    if (rxBuf[i] == 0xC1) { delay(50); return true; }
+  }
+  return false;
+}
+
+static int kLineSendReceive(byte* req, int reqLen, byte* resp) {
+  while (Serial1.available()) Serial1.read();
+  Serial1.write(req, reqLen);
+  Serial1.flush();
+  unsigned long t = millis();
+  int cnt = 0;
+  while (millis() - t < 300) {
+    if (Serial1.available()) { resp[cnt++] = Serial1.read(); t = millis(); }
+  }
+  return cnt;
+}
+
+static bool kLineQuery2C(uint8_t addrHi, uint8_t addrLo, uint16_t* raw16) {
+  byte req[8];
+  req[0] = 0x84;
+  req[1] = KLINE_TARGET_ADDR;
+  req[2] = KLINE_TESTER_ADDR;
+  req[3] = 0x2C;
+  req[4] = 0x10;
+  req[5] = addrHi;
+  req[6] = addrLo;
+  req[7] = kLineChecksum(req, 7);
+
+  byte resp[64];
+  int len = kLineSendReceive(req, 8, resp);
+
+  for (int i = 0; i < len - 1; i++) {
+    if (resp[i] == 0x6C) {
+      if (i + 3 < len)      *raw16 = ((uint16_t)resp[i + 2] << 8) | resp[i + 3];
+      else if (i + 2 < len) *raw16 = resp[i + 2];
+      else                  *raw16 = 0;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void kLineUpdate() {
+  if (!kLineMode) return;
+
+  uint32_t now = millis();
+  if ((now - lastKLineReadMs) < KLINE_READ_INTERVAL_MS) return;
+  lastKLineReadMs = now;
+
+  if (!kLineConnected || kLineReadCount >= 20) {
+    kLineConnected = kLineFastInit();
+    kLineReadCount = 0;
+    if (!kLineConnected) return;
+  }
+
+  uint16_t raw = 0;
+
+  // Odczyt Boost (adres 0x009E) → raw * 0.136 = hPa
+  if (kLineQuery2C(0x00, 0x9E, &raw)) {
+    kLineBoostHpa = (int)(raw * 0.136f);
+    kLineReadCount++;
+  } else {
+    kLineBoostHpa  = -99;
+    kLineConnected = false;
+    return;
+  }
+
+  delay(40);
+
+  // Odczyt Voltage (adres 0x0093) → raw * 0.00268 = V
+  if (kLineQuery2C(0x00, 0x93, &raw)) {
+    kLineVoltage = raw * 0.00268f;
+    kLineReadCount++;
+  } else {
+    kLineVoltage   = -99.0f;
+    kLineConnected = false;
+  }
 }
 
 // ================== CAN init ==================
@@ -584,6 +773,8 @@ void setup() {
   delay(200);
 
   pinMode(PIN_PRZYCISKU, INPUT_PULLUP);
+  pinMode(PIN_KLINE_MODE, INPUT_PULLUP);
+  kLineMode = (digitalRead(PIN_KLINE_MODE) == LOW);
 
   display.begin();
   display.cp437(true);
@@ -612,6 +803,25 @@ void loop() {
   handleMarketingSender();
 
   bool anyStateChanged = false;
+
+  // Sprawdź pin K-Line mode (pin 21 LOW = tryb K-Line)
+  bool newKLineMode = (digitalRead(PIN_KLINE_MODE) == LOW);
+  if (newKLineMode != kLineMode) {
+    kLineMode      = newKLineMode;
+    kLineConnected = false;
+    drawStaticUI();
+    updateUI(true);
+    commitPops();
+  }
+
+  // Aktualizuj dane K-Line (nieblokujące)
+  if (kLineMode) {
+    kLineUpdate();
+    if (kLineBoostHpa != prevKLineBoostHpa || kLineVoltage != prevKLineVoltage) {
+      anyStateChanged = true;
+    }
+  }
+
   twai_message_t msg;
 
   while (twai_receive(&msg, pdMS_TO_TICKS(0)) == ESP_OK) {
