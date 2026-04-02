@@ -861,7 +861,8 @@ static void buildDiagQRUrl(char* urlBuf, int bufSize) {
   }
 
   // QR Version 6 ECC-L byte mode max ~106 bytes
-  if ((int)strlen(urlBuf) > 106) {
+  static const int QR_V6_MAX_BYTES = 106;
+  if ((int)strlen(urlBuf) > QR_V6_MAX_BYTES) {
     snprintf(urlBuf, bufSize, "instalacjeoffroad.pl/dtc?c=all");
   }
 }
@@ -880,22 +881,24 @@ static void drawDiagQRPage() {
   buildDiagQRUrl(url, sizeof(url));
   int urlLen = (int)strlen(url);
 
-  // Choose QR version and pixel scale based on URL length
+  // Choose QR version and pixel scale based on URL length.
+  // Capacity (byte mode, ECC-L): V3=42B (29×29, 4px→116px), V4=62B (33×33, 3px→99px),
+  // V5=84B (37×37, 3px→111px), V6=106B (41×41, 3px→123px). All fit on 128px screen.
   uint8_t qrVersion;
   int pixelScale;
 
   if (urlLen <= 42) {
-    qrVersion  = 3;  // 29×29 modules
-    pixelScale = 4;  // 116px
+    qrVersion  = 3;  // 29×29 modules, 4px/module = 116px
+    pixelScale = 4;
   } else if (urlLen <= 62) {
-    qrVersion  = 4;  // 33×33 modules
-    pixelScale = 3;  // 99px
+    qrVersion  = 4;  // 33×33 modules, 3px/module = 99px
+    pixelScale = 3;
   } else if (urlLen <= 84) {
-    qrVersion  = 5;  // 37×37 modules
-    pixelScale = 3;  // 111px
+    qrVersion  = 5;  // 37×37 modules, 3px/module = 111px
+    pixelScale = 3;
   } else {
-    qrVersion  = 6;  // 41×41 modules
-    pixelScale = 3;  // 123px
+    qrVersion  = 6;  // 41×41 modules, 3px/module = 123px
+    pixelScale = 3;
   }
 
   // Generate QR code
