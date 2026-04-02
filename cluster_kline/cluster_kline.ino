@@ -83,6 +83,13 @@ static const uint32_t KLINE_READ_INTERVAL_MS = 200;
 static int   prevKLineBoostHpa  = -99;
 static float prevKLineVoltage   = -99.0f;
 
+// ================== CAN RPM (0x316) ==================
+static int canRPM = 0;
+
+// ================== Ciśnienie atmosferyczne (auto-kalibracja) ==================
+static float atmosBar = 0.0f;
+static bool  atmosSet = false;
+
 // ================== Stan poprzedni ==================
 char poprzbieg = -99;
 char poprztryb = -99;
@@ -588,9 +595,18 @@ static void drawStaticUI() {
 static void drawEngTemp() {
   if (kLineMode) {
     char buf[12];
-    if (kLineBoostHpa == -99) strcpy(buf, "--");
-    else snprintf(buf, sizeof(buf), "%d", kLineBoostHpa);
-    drawKLineSmart(X_ENG_NUM, Y_ENG_ROW, C_YELL, buf, "hPa",
+    if (kLineBoostHpa == -99) {
+      strcpy(buf, "--");
+    } else {
+      float displayBoostBar;
+      if (atmosSet) {
+        displayBoostBar = (kLineBoostHpa / 1000.0f) - atmosBar;
+      } else {
+        displayBoostBar = kLineBoostHpa / 1000.0f;
+      }
+      snprintf(buf, sizeof(buf), "%.2f", displayBoostBar);
+    }
+    drawKLineSmart(X_ENG_NUM, Y_ENG_ROW, C_YELL, buf, "b",
                    engPrevBuf, engPrevLen, engSuffixDrawn);
   } else {
     drawTempSmart(X_ENG_NUM, Y_ENG_ROW, C_YELL,
@@ -991,11 +1007,25 @@ void loop() {
         default: break;
       }
     }
+
+    // ================== CAN RPM (0x316) — niezależnie od trybu ==================
+    if (rxId == 0x316 && len >= 4) {
+      uint8_t hexVal = rxBuf[3];
+      int rpm = (int)((hexVal - 3) * 41.6667f);
+      if (rpm < 0) rpm = 0;
+      canRPM = rpm;
+    }
   }
 
   CanMode prevMode = canMode;
   updateCanModeFromSeen();
   if (canMode != prevMode) anyStateChanged = true;
+
+  // Auto-kalibracja ciśnienia atmosferycznego gdy silnik zgaszony
+  if (kLineMode && kLineBoostHpa != -99 && canRPM < 600) {
+    atmosBar = kLineBoostHpa / 1000.0f;
+    atmosSet = true;
+  }
 
   {
     char prevTrybUI = trybUI;
