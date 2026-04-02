@@ -906,6 +906,21 @@ static void drawDiagScreen() {
   display.print(pageBuf);
 }
 
+// ================== Diagnostics helpers ==================
+
+// Re-read DTCs, recalculate pages, reset to page 1 and redraw.
+// Sets diagMode = true; safe to call both when entering and when refreshing.
+static void enterDiagMode() {
+  diagMode       = true;
+  diagPage       = 0;
+  kLineConnected = false;
+  readDTCs();
+  int dtcPages   = (dtcCount + DTCS_PER_PAGE - 1) / DTCS_PER_PAGE;
+  diagTotalPages = dtcPages + 1;  // +1 for DEL/EXIT page
+  if (diagTotalPages < 1) diagTotalPages = 1;
+  drawDiagScreen();
+}
+
 // ================== CAN init ==================
 static bool initCanB_500k() {
   twai_general_config_t g =
@@ -958,58 +973,31 @@ void loop() {
 // ===== PIN 21 — short press (<3s) / long press (>=3s) =====
   static bool     lastPinState21      = HIGH;
   static uint32_t pin21PressStartMs   = 0;
+  static uint32_t pin21LastEventMs    = 0;
   static bool     pin21WasPressed     = false;
   static bool     pin21LongHandled    = false;
   const  uint32_t DIAG_LONG_PRESS_MS  = 3000;
+  const  uint32_t PIN21_DEBOUNCE_MS   = 50;
 
   bool currentPin21 = digitalRead(PIN_KLINE_MODE);
+  uint32_t nowMs21  = millis();
 
-  // Falling edge — button pressed
+  // Falling edge — button pressed (HIGH → LOW)
   if (currentPin21 == LOW && lastPinState21 == HIGH) {
-    if (!pin21WasPressed) {
+    if (!pin21WasPressed && (nowMs21 - pin21LastEventMs) >= PIN21_DEBOUNCE_MS) {
       pin21WasPressed   = true;
-      pin21PressStartMs = millis();
+      pin21PressStartMs = nowMs21;
       pin21LongHandled  = false;
+      pin21LastEventMs  = nowMs21;
     }
-  }
-
-  // Rising edge — button released
-  if (currentPin21 == HIGH && lastPinState21 == LOW) {
-    if (pin21WasPressed && !pin21LongHandled) {
-      // Short press
-      if (diagMode) {
-        if (diagPage < diagTotalPages - 1) {
-          // Advance to next page
-          diagPage++;
-          drawDiagScreen();
-        } else {
-          // Last page → exit diag mode
-          diagMode = false;
-          diagPage = 0;
-          kLineConnected = false;
-          drawStaticUI();
-          updateUI(true);
-          commitPops();
-        }
-      } else {
-        // Normal mode: toggle kLineMode
-        kLineMode      = !kLineMode;
-        kLineConnected = false;
-        drawStaticUI();
-        updateUI(true);
-        commitPops();
-      }
-    }
-    pin21WasPressed  = false;
-    pin21LongHandled = false;
   }
 
   // Long press detection (while button is held)
   if (currentPin21 == LOW && pin21WasPressed && !pin21LongHandled) {
-    if ((millis() - pin21PressStartMs) >= DIAG_LONG_PRESS_MS) {
+    if ((nowMs21 - pin21PressStartMs) >= DIAG_LONG_PRESS_MS) {
       pin21LongHandled = true;
       if (diagMode) {
-        // Long press on last page → clear DTCs
+        // Long press on last page → clear DTCs, then re-read and stay in diag
         if (diagPage == diagTotalPages - 1) {
           display.fillRect(0, Y_MID_TOP, 128, H_MID, C_BLACK);
           display.setTextSize(2);
@@ -1025,23 +1013,48 @@ void loop() {
           display.setCursor((128 - msgLen * 12) / 2, Y_MID_TOP + (H_MID - 16) / 2);
           display.print(msg);
           delay(1500);
-          diagMode = false;
-          diagPage = 0;
+          // Re-read DTCs and return to page 1 of diag mode (do not exit)
+          enterDiagMode();
+        }
+      } else {
+        // Normal mode: enter diag
+        enterDiagMode();
+      }
+    }
+  }
+
+  // Rising edge — button released (LOW → HIGH); EXIT/next-page on release, not on press
+  if (currentPin21 == HIGH && lastPinState21 == LOW) {
+    if ((nowMs21 - pin21LastEventMs) >= PIN21_DEBOUNCE_MS) {
+      pin21LastEventMs = nowMs21;
+      if (pin21WasPressed && !pin21LongHandled) {
+        // Short press (released before 3 s)
+        if (diagMode) {
+          if (diagPage < diagTotalPages - 1) {
+            // Advance to next page
+            diagPage++;
+            drawDiagScreen();
+          } else {
+            // Last page → exit diag mode
+            diagMode = false;
+            diagPage = 0;
+            kLineConnected = false;
+            drawStaticUI();
+            updateUI(true);
+            commitPops();
+          }
+        } else {
+          // Normal mode: toggle kLineMode
+          kLineMode      = !kLineMode;
           kLineConnected = false;
           drawStaticUI();
           updateUI(true);
           commitPops();
         }
-      } else {
-        // Normal mode: enter diag
-        diagMode       = true;
-        diagPage       = 0;
-        kLineConnected = false;
-        readDTCs();
-        int dtcPages   = (dtcCount + DTCS_PER_PAGE - 1) / DTCS_PER_PAGE;
-        diagTotalPages = dtcPages + 1;  // +1 for DEL/EXIT page
-        drawDiagScreen();
       }
+      // Long press was already handled — ignore this release
+      pin21WasPressed  = false;
+      pin21LongHandled = false;
     }
   }
 
