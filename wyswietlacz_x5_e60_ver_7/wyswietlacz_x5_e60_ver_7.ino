@@ -735,7 +735,7 @@ static void kLineUpdate() {
 
   // Odczyt Boost (adres 0x009E) → raw * 0.136 = hPa
   if (kLineQuery2C(0x00, 0x9E, &raw)) {
-    kLineBoostHpa = (int)(raw * 0.136f);
+    kLineBoostHpa = (int)(raw * 0.1276f);
     kLineReadCount++;
   } else {
     kLineBoostHpa  = -99;
@@ -745,9 +745,9 @@ static void kLineUpdate() {
 
   delay(40);
 
-  // Odczyt Voltage (adres 0x0093) → raw * 0.00268 = V
+  // Odczyt Voltage (adres 0x0093) → raw * 0.00247 = V
   if (kLineQuery2C(0x00, 0x93, &raw)) {
-    kLineVoltage = raw * 0.00268f;
+    kLineVoltage = raw * 0.00247f;
     kLineReadCount++;
   } else {
     kLineVoltage   = -99.0f;
@@ -804,15 +804,22 @@ void loop() {
 
   bool anyStateChanged = false;
 
-  // Sprawdź pin K-Line mode (pin 21 LOW = tryb K-Line)
-  bool newKLineMode = (digitalRead(PIN_KLINE_MODE) == LOW);
-  if (newKLineMode != kLineMode) {
-    kLineMode      = newKLineMode;
+// ===== TOGGLE na pin 21 (jedno zwarcie = przełącz tryb) =====
+  static bool lastPinState = HIGH;
+  static uint32_t lastToggleMs = 0;
+  const uint32_t TOGGLE_DEBOUNCE_MS = 200;
+
+  bool currentPin = digitalRead(PIN_KLINE_MODE);
+
+  if (currentPin == LOW && lastPinState == HIGH && (millis() - lastToggleMs) > TOGGLE_DEBOUNCE_MS) {
+    kLineMode      = !kLineMode;    // klik → ON, kolejny klik → OFF, kolejny → ON...
     kLineConnected = false;
+    lastToggleMs   = millis();
     drawStaticUI();
     updateUI(true);
     commitPops();
   }
+  lastPinState = currentPin;
 
   // Aktualizuj dane K-Line (nieblokujące)
   if (kLineMode) {
