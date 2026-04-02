@@ -4,6 +4,10 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1351.h>
 
+extern "C" {
+#include "qrcode.h"
+}
+
 // ================== CAN B (TWAI) ==================
 #define CAN_TX 7
 #define CAN_RX 6
@@ -834,6 +838,102 @@ static bool clearDTCs() {
 static const int DTCS_PER_PAGE   = 4;
 static const int DIAG_ROW_STEP   = 18;  // 16px char + 2px gap
 
+// Build the URL to encode in the QR code
+static void buildDiagQRUrl(char* urlBuf, int bufSize) {
+  if (dtcCount == 0) {
+    snprintf(urlBuf, bufSize, "instalacjeoffroad.pl/dtc");
+    return;
+  }
+
+  int pos = snprintf(urlBuf, bufSize, "instalacjeoffroad.pl/dtc?c=");
+
+  for (int i = 0; i < dtcCount; i++) {
+    int remaining = bufSize - pos;
+    int needed = (i > 0 ? 1 : 0) + 4;  // optional comma + 4 hex digits
+
+    if (remaining < needed + 1) {
+      snprintf(urlBuf, bufSize, "instalacjeoffroad.pl/dtc?c=all");
+      return;
+    }
+
+    if (i > 0) urlBuf[pos++] = ',';
+    pos += snprintf(urlBuf + pos, remaining, "%04X", dtcCodes[i]);
+  }
+
+  // QR Version 6 ECC-L byte mode max ~106 bytes
+  static const int QR_V6_MAX_BYTES = 106;
+  if ((int)strlen(urlBuf) > QR_V6_MAX_BYTES) {
+    snprintf(urlBuf, bufSize, "instalacjeoffroad.pl/dtc?c=all");
+  }
+}
+
+static void drawDiagQRPage() {
+  display.fillScreen(C_BLACK);
+
+  // Small "DIAG" label at top
+  display.setTextSize(1);
+  display.setTextColor(C_CYAN);
+  display.setCursor(0, 0);
+  display.print("DIAG");
+
+  // Build URL
+  char url[128];
+  buildDiagQRUrl(url, sizeof(url));
+  int urlLen = (int)strlen(url);
+
+  // Choose QR version and pixel scale based on URL length.
+  // Capacity (byte mode, ECC-L): V3=42B (29×29, 4px→116px), V4=62B (33×33, 3px→99px),
+  // V5=84B (37×37, 3px→111px), V6=106B (41×41, 3px→123px). All fit on 128px screen.
+  uint8_t qrVersion;
+  int pixelScale;
+
+  if (urlLen <= 42) {
+    qrVersion  = 3;  // 29×29 modules, 4px/module = 116px
+    pixelScale = 4;
+  } else if (urlLen <= 62) {
+    qrVersion  = 4;  // 33×33 modules, 3px/module = 99px
+    pixelScale = 3;
+  } else if (urlLen <= 84) {
+    qrVersion  = 5;  // 37×37 modules, 3px/module = 111px
+    pixelScale = 3;
+  } else {
+    qrVersion  = 6;  // 41×41 modules, 3px/module = 123px
+    pixelScale = 3;
+  }
+
+  // Generate QR code
+  QRCode qrcode;
+  uint8_t qrcodeData[qrcode_getBufferSize(qrVersion)];
+  qrcode_initText(&qrcode, qrcodeData, qrVersion, ECC_LOW, url);
+
+  int qrSize   = qrcode.size;
+  int totalPx  = qrSize * pixelScale;
+
+  // Center on screen with a small margin for top/bottom labels
+  int startX = (128 - totalPx) / 2;
+  int startY = (128 - totalPx) / 2;
+
+  // White quiet-zone border (4px) around QR
+  display.fillRect(startX - 4, startY - 4, totalPx + 8, totalPx + 8, C_WHITE);
+
+  // Draw QR modules
+  for (uint8_t y = 0; y < qrSize; y++) {
+    for (uint8_t x = 0; x < qrSize; x++) {
+      uint16_t color = qrcode_getModule(&qrcode, x, y) ? C_BLACK : C_WHITE;
+      display.fillRect(startX + x * pixelScale, startY + y * pixelScale,
+                       pixelScale, pixelScale, color);
+    }
+  }
+
+  // Page indicator at bottom
+  display.setTextSize(1);
+  display.setTextColor(C_WHITE);
+  char pageBuf[12];
+  snprintf(pageBuf, sizeof(pageBuf), "%d/%d >", diagPage + 1, diagTotalPages);
+  display.setCursor(0, 120);
+  display.print(pageBuf);
+}
+
 static void drawDiagDTCPage(int page) {
   display.fillRect(0, Y_MID_TOP, 128, H_MID, C_BLACK);
 
@@ -880,6 +980,12 @@ static void drawDiagLastPage() {
 }
 
 static void drawDiagScreen() {
+  // QR page uses full screen — handle it separately
+  if (diagPage == diagTotalPages - 2) {
+    drawDiagQRPage();
+    return;
+  }
+
   display.fillScreen(C_BLACK);
   display.drawFastHLine(0, 25, 128, C_CYAN);
   display.drawFastHLine(0, 104, 128, C_CYAN);
@@ -891,7 +997,7 @@ static void drawDiagScreen() {
   display.print("DIAG");
 
   // Middle zone: DTC page or last (DEL/EXIT) page
-  if (diagPage >= diagTotalPages - 1) {
+  if (diagPage == diagTotalPages - 1) {
     drawDiagLastPage();
   } else {
     drawDiagDTCPage(diagPage);
@@ -915,9 +1021,8 @@ static void enterDiagMode() {
   diagPage       = 0;
   kLineConnected = false;
   readDTCs();
-  int dtcPages   = (dtcCount + DTCS_PER_PAGE - 1) / DTCS_PER_PAGE;
-  diagTotalPages = dtcPages + 1;  // +1 for DEL/EXIT page
-  if (diagTotalPages < 1) diagTotalPages = 1;
+  int dtcPages   = (dtcCount > 0) ? ((dtcCount + DTCS_PER_PAGE - 1) / DTCS_PER_PAGE) : 1;
+  diagTotalPages = dtcPages + 2;  // DTC pages + QR page + DEL/EXIT page
   drawDiagScreen();
 }
 
