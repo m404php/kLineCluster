@@ -90,6 +90,16 @@ static int canRPM = 0;
 static float atmosBar = 0.0f;
 static bool  atmosSet = false;
 
+// ================== Tryb diagnostyczny DTC ==================
+#define MAX_DTCS 20
+static uint16_t dtcCodes[MAX_DTCS];
+static uint8_t  dtcStatuses[MAX_DTCS];
+static int      dtcCount = 0;
+
+static bool  diagMode       = false;
+static int   diagPage       = 0;
+static int   diagTotalPages = 0;
+
 // ================== Stan poprzedni ==================
 char poprzbieg = -99;
 char poprztryb = -99;
@@ -771,6 +781,131 @@ static void kLineUpdate() {
   }
 }
 
+// ================== DTC odczyt / kasowanie ==================
+
+static bool readDTCs() {
+  if (!kLineFastInit()) return false;
+
+  byte req[] = {0x84, KLINE_TARGET_ADDR, KLINE_TESTER_ADDR, 0x18, 0x02, 0xFF, 0xFF, 0x00};
+  req[7] = kLineChecksum(req, 7);
+
+  byte resp[256];
+  int len = kLineSendReceive(req, 8, resp);
+
+  dtcCount = 0;
+
+  for (int i = 0; i < len; i++) {
+    if (resp[i] == 0x58 && i + 1 < len) {
+      int numDTCs = resp[i + 1];
+      // Clamp to what the buffer can actually hold
+      int maxFromBuf = (len - (i + 2)) / 3;
+      if (numDTCs > maxFromBuf) numDTCs = maxFromBuf;
+      for (int j = 0; j < numDTCs && j < MAX_DTCS; j++) {
+        int idx = (i + 2) + (j * 3);
+        if (idx + 2 < len) {
+          dtcCodes[j]    = ((uint16_t)resp[idx] << 8) | resp[idx + 1];
+          dtcStatuses[j] = resp[idx + 2];
+          dtcCount++;
+        }
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool clearDTCs() {
+  if (!kLineFastInit()) return false;
+
+  byte req[] = {0x83, KLINE_TARGET_ADDR, KLINE_TESTER_ADDR, 0x14, 0xFF, 0xFF, 0x00};
+  req[6] = kLineChecksum(req, 6);
+
+  byte resp[256];
+  int len = kLineSendReceive(req, 7, resp);
+
+  for (int i = 0; i < len; i++) {
+    if (resp[i] == 0x54) return true;
+  }
+  return false;
+}
+
+// ================== Ekran diagnostyczny ==================
+
+static const int DTCS_PER_PAGE   = 4;
+static const int DIAG_ROW_STEP   = 18;  // 16px char + 2px gap
+
+static void drawDiagDTCPage(int page) {
+  display.fillRect(0, Y_MID_TOP, 128, H_MID, C_BLACK);
+
+  int startIdx = page * DTCS_PER_PAGE;
+  for (int i = 0; i < DTCS_PER_PAGE; i++) {
+    int idx = startIdx + i;
+    if (idx >= dtcCount) break;
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%04X", dtcCodes[idx]);
+
+    display.setTextSize(2);
+    display.setTextColor(C_YELL);
+    display.setCursor(4, Y_MID_TOP + i * DIAG_ROW_STEP);
+    display.print(buf);
+  }
+}
+
+static void drawDiagLastPage() {
+  display.fillRect(0, Y_MID_TOP, 128, H_MID, C_BLACK);
+
+  // Two rows, vertically centered in the middle zone
+  int y1 = Y_MID_TOP + (H_MID - 16 * 2 - 4) / 2;
+  int y2 = y1 + 16 + 4;
+
+  // Row 1: "DEL" (red) | "HOLD" (white)
+  display.setTextSize(2);
+  display.setTextColor(C_RED);
+  display.setCursor(4, y1);
+  display.print("DEL");
+
+  display.setTextColor(C_WHITE);
+  display.setCursor(70, y1);
+  display.print("HOLD");
+
+  // Row 2: "EXIT" (green) | "PRESS" (white)
+  display.setTextColor(C_GREEN);
+  display.setCursor(4, y2);
+  display.print("EXIT");
+
+  display.setTextColor(C_WHITE);
+  display.setCursor(70, y2);
+  display.print("PRESS");
+}
+
+static void drawDiagScreen() {
+  display.fillScreen(C_BLACK);
+  display.drawFastHLine(0, 25, 128, C_CYAN);
+  display.drawFastHLine(0, 104, 128, C_CYAN);
+
+  // "DIAG" label at top (where BST/ENG normally appears)
+  display.setTextSize(2);
+  display.setTextColor(C_CYAN);
+  display.setCursor(X_ENG_LABEL, Y_ENG_ROW);
+  display.print("DIAG");
+
+  // Middle zone: DTC page or last (DEL/EXIT) page
+  if (diagPage >= diagTotalPages - 1) {
+    drawDiagLastPage();
+  } else {
+    drawDiagDTCPage(diagPage);
+  }
+
+  // Page indicator at bottom
+  char pageBuf[16];
+  snprintf(pageBuf, sizeof(pageBuf), "%d/%d >", diagPage + 1, diagTotalPages);
+  display.setTextSize(2);
+  display.setTextColor(C_WHITE);
+  display.setCursor(X_GBX_LABEL, Y_GBX_ROW);
+  display.print(pageBuf);
+}
+
 // ================== CAN init ==================
 static bool initCanB_500k() {
   twai_general_config_t g =
@@ -820,25 +955,100 @@ void loop() {
 
   bool anyStateChanged = false;
 
-// ===== TOGGLE na pin 21 (jedno zwarcie = przełącz tryb) =====
-  static bool lastPinState = HIGH;
-  static uint32_t lastToggleMs = 0;
-  const uint32_t TOGGLE_DEBOUNCE_MS = 200;
+// ===== PIN 21 — short press (<3s) / long press (>=3s) =====
+  static bool     lastPinState21      = HIGH;
+  static uint32_t pin21PressStartMs   = 0;
+  static bool     pin21WasPressed     = false;
+  static bool     pin21LongHandled    = false;
+  const  uint32_t DIAG_LONG_PRESS_MS  = 3000;
 
-  bool currentPin = digitalRead(PIN_KLINE_MODE);
+  bool currentPin21 = digitalRead(PIN_KLINE_MODE);
 
-  if (currentPin == LOW && lastPinState == HIGH && (millis() - lastToggleMs) > TOGGLE_DEBOUNCE_MS) {
-    kLineMode      = !kLineMode;    // klik → ON, kolejny klik → OFF, kolejny → ON...
-    kLineConnected = false;
-    lastToggleMs   = millis();
-    drawStaticUI();
-    updateUI(true);
-    commitPops();
+  // Falling edge — button pressed
+  if (currentPin21 == LOW && lastPinState21 == HIGH) {
+    if (!pin21WasPressed) {
+      pin21WasPressed   = true;
+      pin21PressStartMs = millis();
+      pin21LongHandled  = false;
+    }
   }
-  lastPinState = currentPin;
+
+  // Rising edge — button released
+  if (currentPin21 == HIGH && lastPinState21 == LOW) {
+    if (pin21WasPressed && !pin21LongHandled) {
+      // Short press
+      if (diagMode) {
+        if (diagPage < diagTotalPages - 1) {
+          // Advance to next page
+          diagPage++;
+          drawDiagScreen();
+        } else {
+          // Last page → exit diag mode
+          diagMode = false;
+          diagPage = 0;
+          kLineConnected = false;
+          drawStaticUI();
+          updateUI(true);
+          commitPops();
+        }
+      } else {
+        // Normal mode: toggle kLineMode
+        kLineMode      = !kLineMode;
+        kLineConnected = false;
+        drawStaticUI();
+        updateUI(true);
+        commitPops();
+      }
+    }
+    pin21WasPressed  = false;
+    pin21LongHandled = false;
+  }
+
+  // Long press detection (while button is held)
+  if (currentPin21 == LOW && pin21WasPressed && !pin21LongHandled) {
+    if ((millis() - pin21PressStartMs) >= DIAG_LONG_PRESS_MS) {
+      pin21LongHandled = true;
+      if (diagMode) {
+        // Long press on last page → clear DTCs
+        if (diagPage == diagTotalPages - 1) {
+          display.fillRect(0, Y_MID_TOP, 128, H_MID, C_BLACK);
+          display.setTextSize(2);
+          display.setTextColor(C_YELL);
+          display.setCursor(4, Y_MID_TOP + (H_MID - 16) / 2);
+          display.print("CLEARING");
+          bool ok = clearDTCs();
+          display.fillRect(0, Y_MID_TOP, 128, H_MID, C_BLACK);
+          display.setTextSize(2);
+          display.setTextColor(ok ? C_GREEN : C_RED);
+          const char* msg = ok ? "CLEARED" : "ERROR";
+          int msgLen = (int)strlen(msg);
+          display.setCursor((128 - msgLen * 12) / 2, Y_MID_TOP + (H_MID - 16) / 2);
+          display.print(msg);
+          delay(1500);
+          diagMode = false;
+          diagPage = 0;
+          kLineConnected = false;
+          drawStaticUI();
+          updateUI(true);
+          commitPops();
+        }
+      } else {
+        // Normal mode: enter diag
+        diagMode       = true;
+        diagPage       = 0;
+        kLineConnected = false;
+        readDTCs();
+        int dtcPages   = (dtcCount + DTCS_PER_PAGE - 1) / DTCS_PER_PAGE;
+        diagTotalPages = dtcPages + 1;  // +1 for DEL/EXIT page
+        drawDiagScreen();
+      }
+    }
+  }
+
+  lastPinState21 = currentPin21;
 
   // Aktualizuj dane K-Line (nieblokujące)
-  if (kLineMode) {
+  if (kLineMode && !diagMode) {
     kLineUpdate();
     if (kLineBoostHpa != prevKLineBoostHpa || kLineVoltage != prevKLineVoltage) {
       anyStateChanged = true;
@@ -1022,7 +1232,7 @@ void loop() {
   if (canMode != prevMode) anyStateChanged = true;
 
   // Auto-kalibracja ciśnienia atmosferycznego gdy silnik zgaszony
-  if (kLineMode && kLineBoostHpa != -99 && canRPM < 600) {
+  if (kLineMode && !diagMode && kLineBoostHpa != -99 && canRPM < 600) {
     atmosBar = kLineBoostHpa / 1000.0f;
     atmosSet = true;
   }
@@ -1040,7 +1250,7 @@ void loop() {
     if (zmiaUI != prevZmiaUI || biegUI != prevBiegUI) anyStateChanged = true;
   }
 
-  if (anyStateChanged) {
+  if (anyStateChanged && !diagMode) {
     updateUI(false);
     commitPops();
   }
