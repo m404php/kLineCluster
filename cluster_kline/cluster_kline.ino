@@ -944,7 +944,7 @@ void setup() {
 
   display.begin();
   display.cp437(true);
-  display.setRotation(2);
+  display.setRotation(1);
 
   // ===== Splash screen przy starcie =====
   drawSplashScreen();
