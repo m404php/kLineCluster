@@ -876,7 +876,7 @@ static void drawDiagLastPage() {
 
   display.setTextColor(C_WHITE);
   display.setCursor(70, y2);
-  display.print("PRESS");
+  display.print("TAP");
 }
 
 static void drawDiagScreen() {
