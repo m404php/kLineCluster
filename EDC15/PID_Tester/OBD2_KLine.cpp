@@ -162,10 +162,10 @@ void OBD2_KLine::writeData(uint8_t mode, uint8_t pid) {
     message[1] = 0x6A;
   } else if (connectedProtocol == "ISO14230_Fast" || connectedProtocol == "ISO14230_Slow") {
     
-    // NOWY FORMAT DLA BMW: Nagłówek 0x80 + długość danych, Cel: 0x12
+    // Standardowy nagłówek KWP2000: długość payloadu, adres funkcjonalny 0x33
     uint8_t payloadLen = (length == 7) ? 3 : (length == 5) ? 1 : 2;
     message[0] = 0x80 + payloadLen; 
-    message[1] = 0x12; // Zmiana z uniwersalnego 0x33 na 0x12
+    message[1] = 0x33; // Adres funkcjonalny OBD2 (broadcast do wszystkich ECU)
   }
 
   message[2] = 0xF1;
@@ -682,6 +682,10 @@ void OBD2_KLine::setProtocol(const String &protocolName) {
   connectionStatus = false;  // Reset connection status
   connectedProtocol = "";    // Reset connected protocol
   debugPrintln(("Protocol set to: " + selectedProtocol).c_str());
+}
+
+String OBD2_KLine::getConnectedProtocol() {
+  return connectedProtocol;
 }
 
 void OBD2_KLine::send5baud(uint8_t data) {
