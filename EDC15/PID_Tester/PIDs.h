@@ -2,6 +2,9 @@
 // PIDs (https://en.wikipedia.org/wiki/OBD-II_PIDs)
 //-------------------------------------------------------------------------------------//
 
+#ifndef PIDS_H
+#define PIDS_H
+
 // ISO14230-Fast init message
 const uint8_t initMsg[4] = {0xC1, 0x33, 0xF1, 0x81};
 
@@ -135,3 +138,5 @@ const byte ENGINE_PERCENT_TORQUE_DATA = 0x64;      // %
 const byte AUX_INPUT_OUTPUT_SUPPORTED = 0x65;      // bit encoded
 
 const byte SUPPORTED_PIDS_81_100 = 0x80;            // bit encoded
+
+#endif  // PIDS_H
