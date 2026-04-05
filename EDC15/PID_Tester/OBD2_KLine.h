@@ -81,14 +81,14 @@ class OBD2_KLine {
   void setProtocol(const String &protocolName);
   void updateConnectionStatus(bool messageReceived);
 
+  uint8_t resultBuffer[64] = {0};  // Public: accessible after readData()
+
  private:
   SerialType *_serial;
   uint32_t _baudRate;
   uint8_t _rxPin;
   uint8_t _txPin;
   Stream *_debugSerial = nullptr;  // Debug serial port
-
-  uint8_t resultBuffer[64] = {0};
   uint8_t unreceivedDataCount = 0;
   bool connectionStatus = false;
 
