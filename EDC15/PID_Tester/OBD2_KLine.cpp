@@ -159,13 +159,13 @@ void OBD2_KLine::writeData(uint8_t mode, uint8_t pid) {
 
   if (connectedProtocol == "ISO9141") {
     message[0] = (mode == read_FreezeFrame || mode == test_OxygenSensors) ? 0x69 : 0x68;
-    message[1] = 0x6A;
+    message[1] = 0x12; // Adres fizyczny ECU (BMW)
   } else if (connectedProtocol == "ISO14230_Fast" || connectedProtocol == "ISO14230_Slow") {
     
-    // Standardowy nagłówek KWP2000: długość payloadu, adres funkcjonalny 0x33
+    // Standardowy nagłówek KWP2000: długość payloadu, adres fizyczny ECU 0x12
     uint8_t payloadLen = (length == 7) ? 3 : (length == 5) ? 1 : 2;
     message[0] = 0x80 + payloadLen; 
-    message[1] = 0x33; // Adres funkcjonalny OBD2 (broadcast do wszystkich ECU)
+    message[1] = 0x12; // Adres fizyczny ECU (BMW)
   }
 
   message[2] = 0xF1;
