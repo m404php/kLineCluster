@@ -33,6 +33,9 @@ const byte THROTTLE_POSITION   = 0x11;
 // Globalny obiekt biblioteki OBD2_KLine
 OBD2_KLine obd(Serial1, 10400, RX_PIN, TX_PIN);
 
+// Aktualnie wybrany protokol (zmieniane przez opcje C)
+String currentProtocol = "Automatic";
+
 // ============================================================
 //  Tablica znanych adresow KWP2000 (opcja 2)
 // ============================================================
@@ -101,6 +104,22 @@ bool initECU() {
 bool reInitECU() {
   obd.setProtocol("Automatic");
   return obd.initOBD2();
+}
+
+// ============================================================
+//  Wzbudzenie ECU z ponowieniami (EDC15 gubi sesje po kazdym PIDzie)
+//  Wywolywac przed KAZDYM pojedynczym zapytaniem do ECU.
+// ============================================================
+bool initWithRetry(int maxRetries = 3) {
+  for (int attempt = 0; attempt < maxRetries; attempt++) {
+    obd.setProtocol(currentProtocol);  // resetuje connectionStatus → wymusza swiezą inicjalizacje
+    if (obd.initOBD2()) return true;
+    Serial.print(F("  ⚠️ Init próba ")); Serial.print(attempt + 1);
+    Serial.println(F(" nieudana, ponawiam..."));
+    delay(500);
+  }
+  Serial.println(F("  ❌ Init nieudany po 3 próbach."));
+  return false;
 }
 
 // ============================================================
@@ -281,7 +300,6 @@ uint16_t readHexAddress() {
 void fullScan() {
   Serial.println(F("\nPELNY SKAN KWP2000 - adresy 0x0001-0x00FF (Service 0x2C)"));
   Serial.println(F("============================================================"));
-  if (!initECU()) return;
   Serial.println();
 
   uint8_t  foundAddrs[256];
@@ -289,12 +307,10 @@ void fullScan() {
   int      foundCount = 0;
 
   for (int addr = 0x01; addr <= 0xFF; addr++) {
-    if (addr > 1 && ((addr - 1) % 10 == 0)) {
-      Serial.println(F("  Re-init ECU..."));
-      if (!reInitECU()) {
-        Serial.println(F("  Re-init nieudany - przerywam skan."));
-        break;
-      }
+    if (!initWithRetry()) {
+      Serial.print(F("  [0x00")); PHEX((uint8_t)addr);
+      Serial.println(F("] ❌ Init nieudany – pomijam adres"));
+      continue;
     }
 
     uint8_t len = query2C(0x00, (uint8_t)addr);
@@ -356,16 +372,13 @@ void fullScan() {
 void knownScan() {
   Serial.println(F("\nSKAN ZNANYCH ADRESOW (~39 wpisow, Service 0x2C)"));
   Serial.println(F("===================================================="));
-  if (!initECU()) return;
   Serial.println();
 
   for (int i = 0; i < KNOWN_COUNT; i++) {
-    if (i > 0 && (i % 10 == 0)) {
-      Serial.println(F("  Re-init ECU..."));
-      if (!reInitECU()) {
-        Serial.println(F("  Re-init nieudany - przerywam."));
-        break;
-      }
+    if (!initWithRetry()) {
+      Serial.print(F("  [")); PHEX(knownAddrs[i].addrHi); PHEX(knownAddrs[i].addrLo);
+      Serial.println(F("] ❌ Init nieudany – pomijam"));
+      continue;
     }
 
     uint8_t hi = knownAddrs[i].addrHi;
@@ -418,8 +431,6 @@ void liveMonitor() {
   Serial.println(F("\nLIVE MONITOR KWP2000 - RPM / Napiecie / Temperatura / Boost"));
   Serial.println(F("Wyslij dowolny znak aby zatrzymac."));
   Serial.println(F("============================================================"));
-
-  if (!initECU()) return;
   Serial.println(F("Start monitoringu...\n"));
 
   static const uint8_t pids[4][2] = {
@@ -438,17 +449,11 @@ void liveMonitor() {
       break;
     }
 
-    if (iteration > 0 && (iteration % 20 == 0)) {
-      if (!reInitECU()) {
-        Serial.println(F("Re-init nieudany - zatrzymuje monitor."));
-        break;
-      }
-    }
-
     uint16_t raw[4] = {0, 0, 0, 0};
     bool ok[4] = {false, false, false, false};
 
     for (int p = 0; p < 4; p++) {
+      if (!initWithRetry()) continue;  // ok[p] pozostaje false
       uint8_t len = query2C(pids[p][0], pids[p][1]);
       delay(40);
       ok[p] = parseResponse2C(len, &raw[p]);
@@ -506,7 +511,7 @@ void singleTest() {
   PHEX(addrHi); PHEX(addrLo);
   Serial.println();
 
-  if (!initECU()) return;
+  if (!initWithRetry()) return;
 
   uint8_t frame[] = {0x84, TARGET_ADDR, TESTER_ADDR, 0x2C, 0x10, addrHi, addrLo};
   printFrame("  TX (bez cs):", frame, 7);  // writeRawData doda checksum
@@ -544,17 +549,21 @@ void formulaComparison() {
   Serial.println(F("\nPOROWNANIE FORMUL - RPM (0x0091) i Temperatura (0x0005)"));
   Serial.println(F("=========================================================="));
 
-  if (!initECU()) return;
-
   uint16_t rawRPM = 0, rawTemp = 0;
 
-  uint8_t lenRPM  = query2C(0x00, 0x91);
-  delay(60);
-  bool okRPM  = parseResponse2C(lenRPM, &rawRPM);
+  bool okRPM = false;
+  if (initWithRetry()) {
+    uint8_t lenRPM = query2C(0x00, 0x91);
+    delay(60);
+    okRPM = parseResponse2C(lenRPM, &rawRPM);
+  }
 
-  uint8_t lenTemp = query2C(0x00, 0x05);
-  delay(60);
-  bool okTemp = parseResponse2C(lenTemp, &rawTemp);
+  bool okTemp = false;
+  if (initWithRetry()) {
+    uint8_t lenTemp = query2C(0x00, 0x05);
+    delay(60);
+    okTemp = parseResponse2C(lenTemp, &rawTemp);
+  }
 
   Serial.println(F("\n-- RPM (adres 0x0091) --"));
   if (okRPM) {
@@ -612,8 +621,6 @@ void identificationMode() {
   Serial.print(F("Identyfikuje adres: 0x")); PHEX(addrHi); PHEX(addrLo);
   Serial.println(F(" (20 odczytow, 500ms odstep)..."));
 
-  if (!initECU()) return;
-
   uint16_t samples[20];
   int validCount = 0;
   uint32_t sumVal = 0;
@@ -621,9 +628,10 @@ void identificationMode() {
   uint16_t maxVal = 0;
 
   for (int i = 0; i < 20; i++) {
-    if (i > 0 && (i % 10 == 0)) {
-      Serial.println(F("  Re-init ECU..."));
-      reInitECU();
+    if (!initWithRetry()) {
+      Serial.print(F("  [")); Serial.print(i + 1); Serial.println(F("] ❌ Init nieudany – pomijam"));
+      delay(500);
+      continue;
     }
 
     uint8_t len = query2C(addrHi, addrLo);
@@ -687,16 +695,11 @@ void scan21() {
   Serial.println(F("\nSKAN Service 0x21 - Local ID 0x01-0x20"));
   Serial.println(F("=========================================="));
 
-  if (!initECU()) return;
-  Serial.println(F("ECU gotowe.\n"));
-
   for (int lid = 0x01; lid <= 0x20; lid++) {
-    if (lid > 1 && ((lid - 1) % 10 == 0)) {
-      Serial.println(F("  Re-init ECU..."));
-      if (!reInitECU()) {
-        Serial.println(F("  Re-init nieudany - przerywam skan."));
-        break;
-      }
+    if (!initWithRetry()) {
+      Serial.print(F("  Local ID 0x")); PHEX((uint8_t)lid);
+      Serial.println(F(": ❌ Init nieudany – pomijam"));
+      continue;
     }
 
     uint8_t frame[] = {0x82, TARGET_ADDR, TESTER_ADDR, 0x21, (uint8_t)lid};
@@ -738,8 +741,6 @@ void obd2LiveData() {
   Serial.println(F("\nOBD2 LIVE DATA (Mode 0x01 - standardowe PIDy)"));
   Serial.println(F("Wyslij dowolny znak aby zatrzymac."));
   Serial.println(F("================================================"));
-
-  if (!initECU()) return;
   Serial.println(F("Start monitoringu OBD2...\n"));
 
   int iteration = 0;
@@ -753,14 +754,14 @@ void obd2LiveData() {
 
     Serial.print(F("#")); Serial.print(iteration); Serial.println(F(":"));
 
-    float rpm  = obd.getLiveData(ENGINE_RPM);
-    float spd  = obd.getLiveData(VEHICLE_SPEED);
-    float temp = obd.getLiveData(ENGINE_COOLANT_TEMP);
-    float iat  = obd.getLiveData(INTAKE_AIR_TEMP);
-    float maf  = obd.getLiveData(MAF_FLOW_RATE);
-    float thr  = obd.getLiveData(THROTTLE_POSITION);
-    float load = obd.getLiveData(ENGINE_LOAD);
-    float fp   = obd.getLiveData(FUEL_PRESSURE);
+    float rpm  = -1; if (initWithRetry()) rpm  = obd.getLiveData(ENGINE_RPM);
+    float spd  = -1; if (initWithRetry()) spd  = obd.getLiveData(VEHICLE_SPEED);
+    float temp = -1; if (initWithRetry()) temp = obd.getLiveData(ENGINE_COOLANT_TEMP);
+    float iat  = -1; if (initWithRetry()) iat  = obd.getLiveData(INTAKE_AIR_TEMP);
+    float maf  = -1; if (initWithRetry()) maf  = obd.getLiveData(MAF_FLOW_RATE);
+    float thr  = -1; if (initWithRetry()) thr  = obd.getLiveData(THROTTLE_POSITION);
+    float load = -1; if (initWithRetry()) load = obd.getLiveData(ENGINE_LOAD);
+    float fp   = -1; if (initWithRetry()) fp   = obd.getLiveData(FUEL_PRESSURE);
 
     Serial.print(F("  RPM          : ")); if (rpm  >= 0) { Serial.print(rpm,  0); Serial.println(F(" rpm"));  } else Serial.println(F("---"));
     Serial.print(F("  Speed        : ")); if (spd  >= 0) { Serial.print(spd,  0); Serial.println(F(" km/h")); } else Serial.println(F("---"));
@@ -784,33 +785,43 @@ void obd2SupportedPIDs() {
   Serial.println(F("\nOBD2 SUPPORTED PIDs"));
   Serial.println(F("================================================"));
 
-  if (!initECU()) return;
-
   // Live Data (Mode 01)
   Serial.println(F("\n-- Mode 01 - Live Data --"));
-  uint8_t cnt = obd.readSupportedLiveData();
-  Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PIDow"));
-  for (int i = 0; i < cnt; i++) {
-    byte pid = obd.getSupportedData(0x01, i);
-    Serial.print(F("  0x")); PHEX(pid); Serial.print(F(" - ")); Serial.println(pidName(pid));
+  if (initWithRetry()) {
+    uint8_t cnt = obd.readSupportedLiveData();
+    Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PIDow"));
+    for (int i = 0; i < cnt; i++) {
+      byte pid = obd.getSupportedData(0x01, i);
+      Serial.print(F("  0x")); PHEX(pid); Serial.print(F(" - ")); Serial.println(pidName(pid));
+    }
+  } else {
+    Serial.println(F("❌ Init nieudany – pomijam Mode 01"));
   }
 
   // Freeze Frame (Mode 02)
   Serial.println(F("\n-- Mode 02 - Freeze Frame --"));
-  cnt = obd.readSupportedFreezeFrame();
-  Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PIDow"));
-  for (int i = 0; i < cnt; i++) {
-    byte pid = obd.getSupportedData(0x02, i);
-    Serial.print(F("  0x")); PHEX(pid); Serial.print(F(" - ")); Serial.println(pidName(pid));
+  if (initWithRetry()) {
+    uint8_t cnt = obd.readSupportedFreezeFrame();
+    Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PIDow"));
+    for (int i = 0; i < cnt; i++) {
+      byte pid = obd.getSupportedData(0x02, i);
+      Serial.print(F("  0x")); PHEX(pid); Serial.print(F(" - ")); Serial.println(pidName(pid));
+    }
+  } else {
+    Serial.println(F("❌ Init nieudany – pomijam Mode 02"));
   }
 
   // Vehicle Info (Mode 09)
   Serial.println(F("\n-- Mode 09 - Vehicle Info --"));
-  cnt = obd.readSupportedVehicleInfo();
-  Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PIDow"));
-  for (int i = 0; i < cnt; i++) {
-    byte pid = obd.getSupportedData(0x09, i);
-    Serial.print(F("  0x")); PHEX(pid); Serial.println();
+  if (initWithRetry()) {
+    uint8_t cnt = obd.readSupportedVehicleInfo();
+    Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PIDow"));
+    for (int i = 0; i < cnt; i++) {
+      byte pid = obd.getSupportedData(0x09, i);
+      Serial.print(F("  0x")); PHEX(pid); Serial.println();
+    }
+  } else {
+    Serial.println(F("❌ Init nieudany – pomijam Mode 09"));
   }
 
   Serial.println(F("\n================================================"));
@@ -833,10 +844,9 @@ void obd2DTC() {
   while (Serial.available()) Serial.read();
   Serial.println(sub);
 
-  if (!initECU()) return;
-
   if (sub == 'S' || sub == 's') {
     Serial.println(F("\n-- Stored DTCs (Mode 03) --"));
+    if (!initWithRetry()) return;
     uint8_t cnt = obd.readStoredDTCs();
     if (cnt == 0) {
       Serial.println(F("Brak zapisanych bledow."));
@@ -848,6 +858,7 @@ void obd2DTC() {
     }
   } else if (sub == 'P' || sub == 'p') {
     Serial.println(F("\n-- Pending DTCs (Mode 07) --"));
+    if (!initWithRetry()) return;
     uint8_t cnt = obd.readPendingDTCs();
     if (cnt == 0) {
       Serial.println(F("Brak oczekujacych bledow."));
@@ -860,6 +871,7 @@ void obd2DTC() {
   } else if (sub == 'C' || sub == 'c') {
     Serial.println(F("\n-- Clear DTCs (Mode 04) --"));
     Serial.println(F("Kasowanie bledow..."));
+    if (!initWithRetry()) return;
     if (obd.clearDTCs()) {
       Serial.println(F("Bledy skasowane."));
     } else {
@@ -877,15 +889,15 @@ void obd2VehicleInfo() {
   Serial.println(F("\nOBD2 VEHICLE INFO (Mode 09)"));
   Serial.println(F("================================================"));
 
-  if (!initECU()) return;
-
   Serial.println(F("\n-- VIN (0x02) --"));
-  String vin = obd.getVehicleInfo(read_VIN);
+  String vin = "";
+  if (initWithRetry()) vin = obd.getVehicleInfo(read_VIN);
   Serial.print(F("VIN: "));
   Serial.println(vin.length() > 0 ? vin : "(brak danych)");
 
   Serial.println(F("\n-- Calibration ID (0x04) --"));
-  String calId = obd.getVehicleInfo(read_ID);
+  String calId = "";
+  if (initWithRetry()) calId = obd.getVehicleInfo(read_ID);
   Serial.print(F("Cal ID: "));
   Serial.println(calId.length() > 0 ? calId : "(brak danych)");
 
@@ -921,6 +933,7 @@ void changeProtocol() {
   }
 
   obd.setProtocol(proto);
+  currentProtocol = proto;  // zapamietaj wybrany protokol dla initWithRetry()
   Serial.print(F("Protokol ustawiony: ")); Serial.println(proto);
   Serial.println(F("Inicjalizacja z nowym protokolem..."));
   if (obd.initOBD2()) {
@@ -950,17 +963,14 @@ void reInitMenu() {
 void obd2FreezeFrame() {
   Serial.println(F("\nOBD2 FREEZE FRAME (Mode 0x02)"));
   Serial.println(F("================================================"));
-
-  if (!initECU()) return;
-
   Serial.println(F("Odczyt danych Freeze Frame..."));
 
-  float rpm  = obd.getFreezeFrame(ENGINE_RPM);
-  float spd  = obd.getFreezeFrame(VEHICLE_SPEED);
-  float temp = obd.getFreezeFrame(ENGINE_COOLANT_TEMP);
-  float iat  = obd.getFreezeFrame(INTAKE_AIR_TEMP);
-  float load = obd.getFreezeFrame(ENGINE_LOAD);
-  float thr  = obd.getFreezeFrame(THROTTLE_POSITION);
+  float rpm  = -1; if (initWithRetry()) rpm  = obd.getFreezeFrame(ENGINE_RPM);
+  float spd  = -1; if (initWithRetry()) spd  = obd.getFreezeFrame(VEHICLE_SPEED);
+  float temp = -1; if (initWithRetry()) temp = obd.getFreezeFrame(ENGINE_COOLANT_TEMP);
+  float iat  = -1; if (initWithRetry()) iat  = obd.getFreezeFrame(INTAKE_AIR_TEMP);
+  float load = -1; if (initWithRetry()) load = obd.getFreezeFrame(ENGINE_LOAD);
+  float thr  = -1; if (initWithRetry()) thr  = obd.getFreezeFrame(THROTTLE_POSITION);
 
   Serial.print(F("  RPM          : ")); if (rpm  >= 0) { Serial.print(rpm,  0); Serial.println(F(" rpm"));  } else Serial.println(F("---"));
   Serial.print(F("  Speed        : ")); if (spd  >= 0) { Serial.print(spd,  0); Serial.println(F(" km/h")); } else Serial.println(F("---"));
