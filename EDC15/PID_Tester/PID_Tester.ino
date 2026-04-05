@@ -3,14 +3,16 @@
 //  Biblioteka: OBD2_KLine  |  Definicje PID: PIDs.h
 //  Protokoły: ISO9141 / ISO14230_Slow / ISO14230_Fast
 //  Piny: RX=35, TX=38  |  ESP32
-//  ⚡ EDC15: inicjalizacja ECU przed KAŻDYM zapytaniem PID
+//  ECU: 0x12 (BMW)  |  Tester: 0xF1
 // ============================================================
 
 #include "OBD2_KLine.h"
 #include "PIDs.h"
 
-#define RX_PIN  35
-#define TX_PIN  38
+#define RX_PIN      35
+#define TX_PIN      38
+#define ECU_ADDR    0x12
+#define TESTER_ADDR 0xF1
 
 // Pomocnicze makro do wydruku hex
 #define PHEX(v)  do { if ((v) < 0x10) Serial.print('0'); Serial.print((v), HEX); } while (0)
@@ -164,11 +166,11 @@ void printFrame(const char* label, const uint8_t* buf, int len) {
 }
 
 // ============================================================
-//  Opcja 1 – Auto-connect (automatyczna detekcja protokołu)
+//  Opcja 1 – Auto-detect protocol & test connection
 // ============================================================
 void connectAuto() {
-  Serial.println(F("\n📡 POŁĄCZ Z ECU – Auto-detekcja protokołu"));
-  Serial.println(F("=========================================="));
+  Serial.println(F("\n📡 AUTO-DETECT PROTOKOŁU I TEST POŁĄCZENIA"));
+  Serial.println(F("==========================================="));
   Serial.println(F("🔁 Próbuję Slow Init (ISO9141 / ISO14230_Slow)..."));
   Serial.println(F("   potem Fast Init (ISO14230_Fast) jeśli brak odpowiedzi."));
   obd.setProtocol("Automatic");
@@ -177,50 +179,93 @@ void connectAuto() {
     currentProtocol = proto;
     Serial.print(F("✅ Połączono! Protokół: "));
     Serial.println(proto);
+
+    Serial.println(F("\n🔍 Odczyt obsługiwanych PID-ów..."));
+    uint8_t cnt = obd.readSupportedLiveData();
+    Serial.print(F("Znaleziono: ")); Serial.print(cnt); Serial.println(F(" PID-ów obsługiwanych przez ECU:"));
+    Serial.println();
+    for (int i = 0; i < cnt; i++) {
+      byte pid = obd.getSupportedData(0x01, i);
+      Serial.print(F("  0x")); PHEX(pid);
+      Serial.print(F("  ")); Serial.println(pidName(pid));
+    }
+    Serial.println(F("\n✅ Test połączenia zakończony."));
   } else {
     Serial.println(F("❌ Nie udało się połączyć z ECU."));
-    Serial.println(F("   Sprawdź okablowanie lub wybierz protokół ręcznie (opcja 2)."));
+    Serial.println(F("   Sprawdź okablowanie lub wybierz protokół ręcznie (opcja 2 lub 3)."));
   }
 }
 
 // ============================================================
-//  Opcja 2 – Połącz z wybranym protokołem
+//  Opcja 2 – Force ISO9141/ISO14230_Slow protocol
 // ============================================================
-void connectProtocol() {
-  Serial.println(F("\n📡 POŁĄCZ Z WYBRANYM PROTOKOŁEM"));
-  Serial.println(F("================================"));
-  Serial.println(F("  1 - ISO9141       (Slow Init, 5-baud, KW1=KW2)"));
-  Serial.println(F("  2 - ISO14230_Slow (Slow Init, 5-baud, KW1≠KW2)"));
-  Serial.println(F("  3 - ISO14230_Fast (Fast Init, puls 25ms na TX)"));
-  Serial.print(F("Wybierz: "));
-
-  while (Serial.available() == 0) delay(10);
-  char c = (char)Serial.read();
-  while (Serial.available()) Serial.read();
-  Serial.println(c);
-
-  String proto = "";
-  switch (c) {
-    case '1': proto = "ISO9141";       break;
-    case '2': proto = "ISO14230_Slow"; break;
-    case '3': proto = "ISO14230_Fast"; break;
-    default:
-      Serial.println(F("❌ Nieznana opcja."));
-      return;
-  }
-
-  Serial.print(F("📡 Łączenie przez: ")); Serial.println(proto);
-  obd.setProtocol(proto);
+void connectSlowInit() {
+  Serial.println(F("\n📡 POŁĄCZ – FORCE ISO9141 / ISO14230_Slow"));
+  Serial.println(F("=========================================="));
+  Serial.println(F("🔁 Próbuję Slow Init (5-baud, adres 0x12)..."));
+  obd.setProtocol("ISO9141");
   if (obd.initOBD2()) {
-    currentProtocol = proto;
-    Serial.println(F("✅ Połączono!"));
+    currentProtocol = obd.getConnectedProtocol();
+    Serial.print(F("✅ Połączono! Protokół: ")); Serial.println(currentProtocol);
+
+    Serial.println(F("\nOdczyt RPM / Coolant / Speed:"));
+    if (initWithRetry()) {
+      float rpm  = obd.getLiveData(ENGINE_RPM);
+      Serial.print(F("  RPM="));
+      if (rpm >= 0) { Serial.print((int)rpm); } else { Serial.print(F("---")); }
+    }
+    if (initWithRetry()) {
+      float temp = obd.getLiveData(ENGINE_COOLANT_TEMP);
+      Serial.print(F("  Coolant="));
+      if (temp >= 0) { Serial.print((int)temp); Serial.print(F("°C")); } else { Serial.print(F("---")); }
+    }
+    if (initWithRetry()) {
+      float spd  = obd.getLiveData(VEHICLE_SPEED);
+      Serial.print(F("  Speed="));
+      if (spd >= 0) { Serial.print((int)spd); Serial.print(F(" km/h")); } else { Serial.print(F("---")); }
+    }
+    Serial.println();
   } else {
-    Serial.println(F("❌ Nie udało się połączyć."));
+    Serial.println(F("❌ Nie udało się połączyć przez Slow Init."));
   }
 }
 
 // ============================================================
-//  Opcja 3 – Skan obsługiwanych PID-ów (Mode 01)
+//  Opcja 3 – Force ISO14230_Fast protocol
+// ============================================================
+void connectFastInit() {
+  Serial.println(F("\n📡 POŁĄCZ – FORCE ISO14230_Fast"));
+  Serial.println(F("================================"));
+  Serial.println(F("🔁 Próbuję Fast Init (puls 25ms na TX)..."));
+  obd.setProtocol("ISO14230_Fast");
+  if (obd.initOBD2()) {
+    currentProtocol = "ISO14230_Fast";
+    Serial.println(F("✅ Połączono! Protokół: ISO14230_Fast"));
+
+    Serial.println(F("\nOdczyt RPM / Coolant / Speed:"));
+    if (initWithRetry()) {
+      float rpm  = obd.getLiveData(ENGINE_RPM);
+      Serial.print(F("  RPM="));
+      if (rpm >= 0) { Serial.print((int)rpm); } else { Serial.print(F("---")); }
+    }
+    if (initWithRetry()) {
+      float temp = obd.getLiveData(ENGINE_COOLANT_TEMP);
+      Serial.print(F("  Coolant="));
+      if (temp >= 0) { Serial.print((int)temp); Serial.print(F("°C")); } else { Serial.print(F("---")); }
+    }
+    if (initWithRetry()) {
+      float spd  = obd.getLiveData(VEHICLE_SPEED);
+      Serial.print(F("  Speed="));
+      if (spd >= 0) { Serial.print((int)spd); Serial.print(F(" km/h")); } else { Serial.print(F("---")); }
+    }
+    Serial.println();
+  } else {
+    Serial.println(F("❌ Nie udało się połączyć przez Fast Init."));
+  }
+}
+
+// ============================================================
+//  Opcja 4 – Skan wszystkich standardowych PID-ów OBD2 (Mode 01, 0x00-0x60)
 // ============================================================
 void scanSupportedPIDs() {
   Serial.println(F("\n🔍 SKAN OBSŁUGIWANYCH PID-ów (Mode 01)"));
@@ -245,7 +290,8 @@ void scanSupportedPIDs() {
 }
 
 // ============================================================
-//  Opcja 4 – Odczyt LIVE DATA (pojedynczy PID)
+//  Pomocnicza – Odczyt LIVE DATA (pojedynczy PID)
+//  Dostępna przez menu opcja 4 (scanSupportedPIDs) lub wywoływana ręcznie
 // ============================================================
 void readSinglePID() {
   Serial.println(F("\n📊 ODCZYT LIVE DATA – Pojedynczy PID"));
@@ -406,88 +452,12 @@ void clearDTCsMenu() {
 }
 
 // ============================================================
-//  Opcja 8 – Informacje o pojeździe (VIN)
-// ============================================================
-void vehicleInfoMenu() {
-  Serial.println(F("\n🚗 INFORMACJE O POJEŹDZIE (Mode 09)"));
-  Serial.println(F("====================================="));
-
-  Serial.println(F("\n-- VIN (0x02) --"));
-  String vin = "";
-  if (initWithRetry()) vin = obd.getVehicleInfo(read_VIN);
-  Serial.print(F("VIN: "));
-  if (vin.length() > 0) { Serial.println(vin); } else { Serial.println(F("(brak danych)")); }
-
-  Serial.println(F("\n-- Calibration ID (0x04) --"));
-  String calId = "";
-  if (initWithRetry()) calId = obd.getVehicleInfo(read_ID);
-  Serial.print(F("Cal ID: "));
-  if (calId.length() > 0) { Serial.println(calId); } else { Serial.println(F("(brak danych)")); }
-
-  Serial.println(F("\n✅ Odczyt informacji o pojeździe zakończony."));
-}
-
-// ============================================================
-//  Opcja 9 – Pełny skan wszystkich PID-ów (0x00–0x6F)
-// ============================================================
-void fullScanPIDs() {
-  Serial.println(F("\n🔬 PEŁNY SKAN PID-ów OBD2 (0x00–0x6F, Mode 01)"));
-  Serial.println(F("================================================"));
-  Serial.println(F("Inicjalizacja ECU przed każdym PIDem (EDC15)..."));
-  Serial.println();
-
-  int found = 0;
-
-  for (byte pid = 0x01; pid <= 0x6F; pid++) {
-    // Pomiń adresy "Supported PIDs" (zwracają bitmapę, nie wartość)
-    if (pid == SUPPORTED_PIDS_1_20  ||
-        pid == SUPPORTED_PIDS_21_40 ||
-        pid == SUPPORTED_PIDS_41_60 ||
-        pid == SUPPORTED_PIDS_61_80) {
-      continue;
-    }
-
-    if (!initWithRetry(2)) {
-      Serial.print(F("  [0x")); PHEX(pid);
-      Serial.println(F("] ❌ Init nieudany – pomijam"));
-      continue;
-    }
-
-    float val = obd.getLiveData(pid);
-
-    Serial.print(F("  [0x")); PHEX(pid); Serial.print(F("]  "));
-    Serial.print(pidName(pid));
-    Serial.print(F(": "));
-
-    if (val >= 0) {
-      Serial.print(val, 2);
-      String unit = pidUnit(pid);
-      if (unit.length() > 0) { Serial.print(F(" ")); Serial.print(unit); }
-      Serial.println(F("  ✅"));
-      found++;
-    } else if (val == -1) {
-      Serial.println(F("--- (timeout)"));
-    } else if (val == -2) {
-      Serial.println(F("--- (zły PID)"));
-    } else {
-      Serial.println(F("--- (nieobsługiwany)"));
-    }
-  }
-
-  Serial.println(F("\n================================================"));
-  Serial.print(F("Podsumowanie: znaleziono "));
-  Serial.print(found);
-  Serial.println(F(" PID-ów z wartościami."));
-  Serial.println(F("✅ Skan zakończony."));
-}
-
-// ============================================================
-//  Opcja 0 – Test surowej ramki KWP2000
+//  Opcja 8 – Raw KWP2000 frame test
 // ============================================================
 void rawFrameTest() {
   Serial.println(F("\n🛠️ TEST SUROWEJ RAMKI KWP2000"));
   Serial.println(F("=============================="));
-  Serial.println(F("Wpisz bajty hex oddzielone spacjami (np. C2 33 F1 01 0C)"));
+  Serial.println(F("Wpisz bajty hex oddzielone spacjami (bez CS, np. 81 12 F1 03)"));
   Serial.println(F("Naciśnij Enter aby wysłać."));
   Serial.print(F("> "));
 
@@ -543,6 +513,156 @@ void rawFrameTest() {
 }
 
 // ============================================================
+//  Opcja 9 – KWP2000 Service 0x2C (DynamicallyDefineLocalIdentifier)
+//  Skan BMW-specyficznych adresów: RPM, Napięcie, Boost, Temp, IAT
+// ============================================================
+void scan2C() {
+  Serial.println(F("\n🔬 SERVICE 0x2C – BMW DynamicallyDefineLocalIdentifier"));
+  Serial.println(F("======================================================="));
+  Serial.println(F("Format ramki: 84 12 F1 2C 10 HI LO CS"));
+  Serial.println(F("Oczekiwana odpowiedź: 0x6C (pozytywna)"));
+  Serial.println();
+
+  // BMW-specyficzne adresy pamięci
+  struct BMWAddr {
+    uint16_t addr;
+    const char *name;
+  };
+  const BMWAddr addrs[] = {
+    {0x0091, "RPM (raw/4 = obr/min)"},
+    {0x0093, "Napięcie (raw*0.00268 = V)"},
+    {0x009E, "Boost/MAP (raw*0.136 = hPa)"},
+    {0x0005, "Coolant Temp (raw*0.1-40 = °C)"},
+    {0x000B, "IAT (raw*0.1-40 = °C)"},
+  };
+  const int addrCount = sizeof(addrs) / sizeof(addrs[0]);
+
+  for (int i = 0; i < addrCount; i++) {
+    uint8_t hi = (addrs[i].addr >> 8) & 0xFF;
+    uint8_t lo = addrs[i].addr & 0xFF;
+
+    Serial.print(F("  [0x")); PHEX(hi); PHEX(lo);
+    Serial.print(F("] ")); Serial.print(addrs[i].name);
+    Serial.print(F(" → "));
+
+    if (!initWithRetry(2)) {
+      Serial.println(F("❌ Init nieudany"));
+      continue;
+    }
+
+    uint8_t frame[] = {0x84, ECU_ADDR, TESTER_ADDR, 0x2C, 0x10, hi, lo};
+    obd.writeRawData(frame, sizeof(frame));
+    uint8_t len = obd.readData();
+
+    if (len == 0) {
+      Serial.println(F("❌ Timeout"));
+      continue;
+    }
+
+    // Wydruk surowych bajtów
+    Serial.print(F("RAW ["));
+    for (int j = 0; j < len; j++) { PHEX(obd.resultBuffer[j]); if (j < len-1) Serial.print(' '); }
+    Serial.print(F("]"));
+
+    // Sprawdź pozytywną odpowiedź 0x6C
+    bool found6C = false;
+    for (int j = 0; j < len; j++) {
+      if (obd.resultBuffer[j] == 0x6C) { found6C = true; break; }
+    }
+
+    // KWP2000 positive response: header(1) + dest(1) + src(1) + svc(0x6C)(1) + subfn(1) + hiVal(1) + loVal(1) = 7 bytes minimum
+    if (found6C && len >= 7) {
+      uint16_t raw = ((uint16_t)obd.resultBuffer[5] << 8) | obd.resultBuffer[6];
+      Serial.print(F("  raw="));
+      Serial.print(raw);
+
+      // Conversion factors from BMW ECU specification (confirmed on EDC16C31 hardware)
+      if (addrs[i].addr == 0x0091) {
+        Serial.print(F("  RPM=")); Serial.print(raw / 4.0f, 0);         // raw / 4 = rpm
+      } else if (addrs[i].addr == 0x0093) {
+        Serial.print(F("  V=")); Serial.print(raw * 0.00268f, 2);        // raw * 0.00268 = V
+      } else if (addrs[i].addr == 0x009E) {
+        Serial.print(F("  hPa=")); Serial.print(raw * 0.136f, 0);        // raw * 0.136 = hPa
+      } else if (addrs[i].addr == 0x0005 || addrs[i].addr == 0x000B) {
+        Serial.print(F("  °C=")); Serial.print(raw * 0.1f - 40.0f, 1);   // raw * 0.1 - 40 = °C
+      }
+      Serial.println(F("  ✅"));
+    } else if (found6C) {
+      Serial.println(F("  ✅ (za mało danych do dekodowania)"));
+    } else {
+      Serial.println(F("  ❌ brak 0x6C"));
+    }
+
+    delay(50);
+  }
+
+  Serial.println(F("\n✅ Skan Service 0x2C zakończony."));
+}
+
+// ============================================================
+//  Opcja A – KWP2000 Service 0x21 (ReadDataByLocalIdentifier)
+//  Skan Local ID 0x01-0x20
+// ============================================================
+void scan21() {
+  Serial.println(F("\n🔬 SERVICE 0x21 – ReadDataByLocalIdentifier"));
+  Serial.println(F("==========================================="));
+  Serial.println(F("Format ramki: 82 12 F1 21 LID CS"));
+  Serial.println(F("Oczekiwana odpowiedź: 0x61 (pozytywna)"));
+  Serial.println(F("Skan Local ID 0x01-0x20..."));
+  Serial.println();
+
+  int found = 0;
+
+  for (uint8_t lid = 0x01; lid <= 0x20; lid++) {
+    Serial.print(F("  LID 0x")); PHEX(lid); Serial.print(F(" → "));
+
+    if (!initWithRetry(2)) {
+      Serial.println(F("❌ Init nieudany – pomijam"));
+      continue;
+    }
+
+    uint8_t frame[] = {0x82, ECU_ADDR, TESTER_ADDR, 0x21, lid};
+    obd.writeRawData(frame, sizeof(frame));
+    uint8_t len = obd.readData();
+
+    if (len == 0) {
+      Serial.println(F("timeout"));
+      continue;
+    }
+
+    // Sprawdź pozytywną odpowiedź 0x61
+    bool found61 = false;
+    for (int j = 0; j < len; j++) {
+      if (obd.resultBuffer[j] == 0x61) { found61 = true; break; }
+    }
+
+    if (found61) {
+      Serial.print(F("✅ DATA ["));
+      for (int j = 0; j < len; j++) {
+        PHEX(obd.resultBuffer[j]);
+        if (j < len - 1) Serial.print(' ');
+      }
+      Serial.println(F("]"));
+      found++;
+    } else {
+      Serial.print(F("❌ ["));
+      for (int j = 0; j < len; j++) {
+        PHEX(obd.resultBuffer[j]);
+        if (j < len - 1) Serial.print(' ');
+      }
+      Serial.println(F("]"));
+    }
+
+    delay(50);
+  }
+
+  Serial.println(F("\n================================================"));
+  Serial.print(F("Znaleziono: ")); Serial.print(found);
+  Serial.println(F(" Local ID z odpowiedzią 0x61."));
+  Serial.println(F("✅ Skan Service 0x21 zakończony."));
+}
+
+// ============================================================
 //  Wyświetl menu główne
 // ============================================================
 void printMenu() {
@@ -556,16 +676,16 @@ void printMenu() {
   Serial.println(F("┌──────────────────────────────────────────────────────┐"));
   Serial.println(F("│  MENU GŁÓWNE                                         │"));
   Serial.println(F("├──────────────────────────────────────────────────────┤"));
-  Serial.println(F("│  1 - POŁĄCZ Z ECU (Auto-detect protokołu)            │"));
-  Serial.println(F("│  2 - POŁĄCZ Z WYBRANYM PROTOKOŁEM                    │"));
-  Serial.println(F("│  3 - SKAN OBSŁUGIWANYCH PID-ów (Mode 01)             │"));
-  Serial.println(F("│  4 - ODCZYT LIVE DATA (pojedynczy PID)               │"));
+  Serial.println(F("│  1 - AUTO-DETECT protokołu + obsługiwane PID-y       │"));
+  Serial.println(F("│  2 - FORCE ISO9141/Slow Init + RPM/Temp/Speed        │"));
+  Serial.println(F("│  3 - FORCE ISO14230_Fast Init + RPM/Temp/Speed       │"));
+  Serial.println(F("│  4 - SKAN OBSŁUGIWANYCH PID-ów (Mode 01)             │"));
   Serial.println(F("│  5 - LIVE MONITOR (RPM/Temp/Speed/Throttle)          │"));
   Serial.println(F("│  6 - ODCZYT DTC (kody błędów)                        │"));
   Serial.println(F("│  7 - KASOWANIE DTC                                   │"));
-  Serial.println(F("│  8 - INFORMACJE O POJEŹDZIE (VIN)                    │"));
-  Serial.println(F("│  9 - PEŁNY SKAN WSZYSTKICH PID-ów (0x00-0x6F)        │"));
-  Serial.println(F("│  0 - TEST SUROWEJ RAMKI KWP2000                      │"));
+  Serial.println(F("│  8 - TEST SUROWEJ RAMKI KWP2000                      │"));
+  Serial.println(F("│  9 - SERVICE 0x2C (BMW: RPM/Voltage/Boost/Temp)      │"));
+  Serial.println(F("│  A - SERVICE 0x21 (ReadDataByLocalIdentifier)        │"));
   Serial.println(F("└──────────────────────────────────────────────────────┘"));
   Serial.print(F("Wybierz opcję: "));
 }
@@ -580,7 +700,7 @@ void setup() {
 
   Serial.println(F("\n╔══════════════════════════════════════════════════════╗"));
   Serial.println(F("║  PID_Tester – EDC15 K-Line (OBD2_KLine Library)     ║"));
-  Serial.println(F("║  ⚡ Init ECU przed każdym PIDem (EDC15 mode)         ║"));
+  Serial.println(F("║  ECU: 0x12 (BMW)  |  Tester: 0xF1  |  K-Line 10400  ║"));
   Serial.println(F("╚══════════════════════════════════════════════════════╝"));
   Serial.println(F("Serial: 115200 baud  |  K-Line: 10400 baud"));
   Serial.print(F("RX: ")); Serial.print(RX_PIN);
@@ -600,21 +720,21 @@ void loop() {
   Serial.println(choice);
 
   switch (choice) {
-    case '1': connectAuto();      break;
-    case '2': connectProtocol();  break;
-    case '3': scanSupportedPIDs(); break;
-    case '4': readSinglePID();    break;
-    case '5': liveMonitor();      break;
-    case '6': readDTCsMenu();     break;
-    case '7': clearDTCsMenu();    break;
-    case '8': vehicleInfoMenu();  break;
-    case '9': fullScanPIDs();     break;
-    case '0': rawFrameTest();     break;
+    case '1': connectAuto();       break;
+    case '2': connectSlowInit();   break;
+    case '3': connectFastInit();   break;
+    case '4': scanSupportedPIDs(); break;
+    case '5': liveMonitor();       break;
+    case '6': readDTCsMenu();      break;
+    case '7': clearDTCsMenu();     break;
+    case '8': rawFrameTest();      break;
+    case '9': scan2C();            break;
+    case 'A':
+    case 'a': scan21();            break;
     default:
-      Serial.println(F("❓ Nieznana opcja. Wpisz 0-9."));
+      Serial.println(F("❓ Nieznana opcja. Wpisz 1-9 lub A."));
       break;
   }
 
   delay(500);
 }
-
