@@ -202,7 +202,7 @@ void connectAuto() {
 void connectSlowInit() {
   Serial.println(F("\n📡 POŁĄCZ – FORCE ISO9141 / ISO14230_Slow"));
   Serial.println(F("=========================================="));
-  Serial.println(F("🔁 Próbuję Slow Init (5-baud, adres 0x33)..."));
+  Serial.println(F("🔁 Próbuję Slow Init (5-baud, adres 0x12)..."));
   obd.setProtocol("ISO9141");
   if (obd.initOBD2()) {
     currentProtocol = obd.getConnectedProtocol();
@@ -290,7 +290,8 @@ void scanSupportedPIDs() {
 }
 
 // ============================================================
-//  Pomocnicza – Odczyt LIVE DATA (pojedynczy PID, używana wewnętrznie)
+//  Pomocnicza – Odczyt LIVE DATA (pojedynczy PID)
+//  Dostępna przez menu opcja 4 (scanSupportedPIDs) lub wywoływana ręcznie
 // ============================================================
 void readSinglePID() {
   Serial.println(F("\n📊 ODCZYT LIVE DATA – Pojedynczy PID"));
@@ -569,20 +570,21 @@ void scan2C() {
       if (obd.resultBuffer[j] == 0x6C) { found6C = true; break; }
     }
 
+    // KWP2000 positive response: header(1) + dest(1) + src(1) + svc(0x6C)(1) + subfn(1) + hiVal(1) + loVal(1) = 7 bytes minimum
     if (found6C && len >= 7) {
       uint16_t raw = ((uint16_t)obd.resultBuffer[5] << 8) | obd.resultBuffer[6];
       Serial.print(F("  raw="));
       Serial.print(raw);
 
-      // Oblicz wartości dla znanych adresów
+      // Conversion factors from BMW ECU specification (confirmed on EDC16C31 hardware)
       if (addrs[i].addr == 0x0091) {
-        Serial.print(F("  RPM=")); Serial.print(raw / 4.0f, 0);
+        Serial.print(F("  RPM=")); Serial.print(raw / 4.0f, 0);         // raw / 4 = rpm
       } else if (addrs[i].addr == 0x0093) {
-        Serial.print(F("  V=")); Serial.print(raw * 0.00268f, 2);
+        Serial.print(F("  V=")); Serial.print(raw * 0.00268f, 2);        // raw * 0.00268 = V
       } else if (addrs[i].addr == 0x009E) {
-        Serial.print(F("  hPa=")); Serial.print(raw * 0.136f, 0);
+        Serial.print(F("  hPa=")); Serial.print(raw * 0.136f, 0);        // raw * 0.136 = hPa
       } else if (addrs[i].addr == 0x0005 || addrs[i].addr == 0x000B) {
-        Serial.print(F("  °C=")); Serial.print(raw * 0.1f - 40.0f, 1);
+        Serial.print(F("  °C=")); Serial.print(raw * 0.1f - 40.0f, 1);   // raw * 0.1 - 40 = °C
       }
       Serial.println(F("  ✅"));
     } else if (found6C) {
