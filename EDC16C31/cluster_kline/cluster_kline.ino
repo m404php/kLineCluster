@@ -759,12 +759,12 @@ static int boostHpaFrom0A9(const uint8_t* rxBuf) {
   static const float FACTOR = 0.477f;
   static const float OFFSET = 1023.0f;
 
-  const int bajt7 = rxBuf[6];
-  const int bajt8 = rxBuf[7];
-  const int rawValue = (bajt8 * CYKL_LEN) + (bajt7 - LSB_START);
+  const int byte7 = rxBuf[6];
+  const int byte8 = rxBuf[7];
+  const int rawValue = (byte8 * CYKL_LEN) + (byte7 - LSB_START);
 
   float boostHpa = 0.0f;
-  if (rawValue < RAW_IDLE) boostHpa = (rawValue / (float)RAW_IDLE) * 1023.0f;
+  if (rawValue < RAW_IDLE) boostHpa = (rawValue / (float)RAW_IDLE) * OFFSET;
   else boostHpa = ((rawValue - RAW_IDLE) * FACTOR) + OFFSET;
 
   return (int)roundf(boostHpa);
