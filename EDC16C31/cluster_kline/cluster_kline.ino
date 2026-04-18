@@ -271,7 +271,7 @@ static inline uint8_t bsfp1(uint8_t x) {
 }
 static inline int tempNew(uint8_t raw) { return (int)raw - 48; }
 static inline int tempOld(uint8_t raw) { return (raw * 20 - 50 * 26 + 13) / 26; }
-static inline bool isGearDigit(char g) { return (g >= '1' && g <= '6'); }
+static inline bool isGearDigit(char g) { return (g >= '1' && g <= '8'); }
 static inline bool isOneHot(uint8_t x) { return x && ((x & (x - 1)) == 0); }
 
 // ================== TWAI send ==================
@@ -1223,7 +1223,7 @@ void loop() {
               newTryb = (D3 > 2) ? 'D' : tmap[D3];
 
               if (newTryb != 'M' && shiftFlag && !shiftTimedOut &&
-                  poprzbieg >= '1' && poprzbieg <= '6') {
+                  poprzbieg >= '1' && poprzbieg <= '8') {
                 newZm = (int8_t)((int)b - (int)poprzbieg);
                 newBieg = poprzbieg;
               } else {
@@ -1307,7 +1307,7 @@ void loop() {
             newBieg = -99; newZm = 0;
             newShiftActive = false;
           } else if (tryb != -99 && tryb != 'M' && shiftFlag && !shiftTimedOut &&
-                     poprzbieg >= '1' && poprzbieg <= '6') {
+                     poprzbieg >= '1' && poprzbieg <= '8') {
             newZm = (int8_t)((int)newBieg - (int)poprzbieg);
             newBieg = poprzbieg;
           } else {
