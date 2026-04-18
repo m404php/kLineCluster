@@ -1374,10 +1374,16 @@ void loop() {
       }
     }
 
-    // ================== CAN RPM (0x316) — niezależnie od trybu ==================
-    if (rxId == 0x316 && len >= 4) {
+    // ================== CAN RPM (wariant-zależny, niezależnie od trybu) ==================
+    if (ecuVariant != ECU_E60 && rxId == 0x316 && len >= 4) {
       uint8_t hexVal = rxBuf[3];
       int rpm = (int)((hexVal - 3) * 41.6667f);
+      if (rpm < 0) rpm = 0;
+      canRPM = rpm;
+    }
+
+    if (ecuVariant == ECU_E60 && rxId == 0x0AA && len >= 6) {
+      int rpm = (int)((rxBuf[5] * 68.9655f) - 36.517f);
       if (rpm < 0) rpm = 0;
       canRPM = rpm;
     }
