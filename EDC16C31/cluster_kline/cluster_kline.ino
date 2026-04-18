@@ -1376,8 +1376,8 @@ void loop() {
 
     // ================== CAN RPM (wariant-zależny, niezależnie od trybu) ==================
     if (ecuVariant != ECU_E60 && rxId == 0x316 && len >= 4) {
-      uint8_t hexVal = rxBuf[3];
-      int rpm = (int)((hexVal - 3) * 41.6667f);
+      uint8_t rawRpmByte = rxBuf[3];
+      int rpm = (int)((rawRpmByte - 3) * 41.6667f);
       if (rpm < 0) rpm = 0;
       canRPM = rpm;
     }
