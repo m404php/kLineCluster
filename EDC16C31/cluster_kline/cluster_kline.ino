@@ -53,6 +53,10 @@ const uint8_t adPart3[8] = {0x64, 0x2E, 0x70, 0x6C, 0x03, 0x02, 0x00, 0x07};
 enum CanMode : uint8_t { CAN_UNKNOWN = 0, CAN_OLD = 1, CAN_NEW = 2 };
 static CanMode canMode = CAN_UNKNOWN;
 
+// ================== AUTO-WYBÓR WARIANTU ECU ==================
+enum EcuVariant : uint8_t { ECU_E53 = 0, ECU_E60 = 1 };
+static EcuVariant ecuVariant = ECU_E53;
+
 static uint32_t lastOldSeenMs = 0;
 static uint32_t lastNewSeenMs = 0;
 static const uint32_t CAN_MODE_TIMEOUT_MS = 800;
@@ -748,6 +752,24 @@ static bool kLineQuery2C(uint8_t addrHi, uint8_t addrLo, uint16_t* raw16) {
   return false;
 }
 
+static int boostHpaFrom0A9(const uint8_t* rxBuf) {
+  static const int LSB_START = 31;
+  static const int CYKL_LEN = 224;
+  static const int RAW_IDLE = 7472;
+  static const float FACTOR = 0.477f;
+  static const float OFFSET = 1023.0f;
+
+  const int bajt7 = rxBuf[6];
+  const int bajt8 = rxBuf[7];
+  const int rawValue = (bajt8 * CYKL_LEN) + (bajt7 - LSB_START);
+
+  float boostHpa = 0.0f;
+  if (rawValue < RAW_IDLE) boostHpa = (rawValue / (float)RAW_IDLE) * 1023.0f;
+  else boostHpa = ((rawValue - RAW_IDLE) * FACTOR) + OFFSET;
+
+  return (int)roundf(boostHpa);
+}
+
 static void kLineUpdate() {
   if (!kLineMode) return;
 
@@ -763,17 +785,19 @@ static void kLineUpdate() {
 
   uint16_t raw = 0;
 
-  // Odczyt Boost (adres 0x009E) → raw * 0.136 = hPa
-  if (kLineQuery2C(0x00, 0x9E, &raw)) {
-    kLineBoostHpa = (int)(raw * 0.1276f);
-    kLineReadCount++;
-  } else {
-    kLineBoostHpa  = -99;
-    kLineConnected = false;
-    return;
-  }
+  // Odczyt Boost (adres 0x009E) tylko dla e53; dla e60 boost idzie z CAN 0x0A9
+  if (ecuVariant == ECU_E53) {
+    if (kLineQuery2C(0x00, 0x9E, &raw)) {
+      kLineBoostHpa = (int)(raw * 0.1276f);
+      kLineReadCount++;
+    } else {
+      kLineBoostHpa  = -99;
+      kLineConnected = false;
+      return;
+    }
 
-  delay(40);
+    delay(40);
+  }
 
   // Odczyt Voltage (adres 0x0093) → raw * 0.00247 = V
   if (kLineQuery2C(0x00, 0x93, &raw)) {
@@ -1046,6 +1070,7 @@ void setup() {
   pinMode(PIN_PRZYCISKU, INPUT_PULLUP);
   pinMode(PIN_KLINE_MODE, INPUT_PULLUP);
   kLineMode = (digitalRead(PIN_KLINE_MODE) == LOW);
+  ecuVariant = ECU_E53;
 
   display.begin();
   display.cp437(true);
@@ -1186,6 +1211,19 @@ void loop() {
 
     if (rxId == 0x43F || rxId == 0x43B || rxId == 0x329) lastOldSeenMs = millis();
     if (rxId == 0x1D2 || rxId == 0x0BA || rxId == 0x0B5 || rxId == 0x1D0) lastNewSeenMs = millis();
+
+    // Wariant ECU: domyślnie e53, po wykryciu 0x0A9 przełączenie na e60 dla bieżącej sesji
+    if (rxId == 0x0A9 && len >= 8) {
+      if (ecuVariant != ECU_E60) ecuVariant = ECU_E60;
+      if (kLineMode) {
+        const int newBoost = boostHpaFrom0A9(rxBuf);
+        if (newBoost != kLineBoostHpa) {
+          kLineBoostHpa = newBoost;
+          anyStateChanged = true;
+        }
+      }
+    }
+
     if (canMode == CAN_UNKNOWN) {
       if (rxId == 0x1D2 || rxId == 0x0BA || rxId == 0x0B5 || rxId == 0x1D0) canMode = CAN_NEW;
       else if (rxId == 0x43F || rxId == 0x43B || rxId == 0x329) canMode = CAN_OLD;
