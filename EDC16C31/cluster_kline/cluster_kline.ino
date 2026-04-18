@@ -1383,6 +1383,7 @@ void loop() {
     }
 
     if (ecuVariant == ECU_E60 && rxId == 0x0AA && len >= 6) {
+      // E60 RPM map from frame 0x0AA: rpm = (byte5 * 68.9655) - 36.517
       int rpm = (int)((rxBuf[5] * 68.9655f) - 36.517f);
       if (rpm < 0) rpm = 0;
       canRPM = rpm;
