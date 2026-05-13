@@ -9,15 +9,15 @@ extern "C" {
 }
 
 // ================== CAN B (TWAI) ==================
-#define CAN_TX 7
-#define CAN_RX 6
+#define CAN_TX 37
+#define CAN_RX 36
 
 // ================== OLED 1.5" SSD1351 SPI (SOFTWARE SPI) ==================
 #define OLED_MOSI 4
 #define OLED_SCK  5
 #define OLED_CS   16
 #define OLED_DC   15
-#define OLED_RST  17
+#define OLED_RST  18
 
 Adafruit_SSD1351 display = Adafruit_SSD1351(128, 128, OLED_CS, OLED_DC, OLED_MOSI, OLED_SCK, OLED_RST);
 
